@@ -68,6 +68,8 @@ export default function AllocationManagement() {
             setTimeout(() => setShowSuccess(false), 3000);
         } catch (error) {
             console.error('Error generating allocations:', error);
+            const errorMessage = error.response?.data?.message || 'Failed to generate allocations';
+            alert(errorMessage);  // Or use a UI component like <Alert>
         } finally {
             setIsGenerating(false);
         }

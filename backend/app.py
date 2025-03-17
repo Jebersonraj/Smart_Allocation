@@ -7,11 +7,8 @@ from model import db, Faculty, Attendance, Venue, VenueAllocation
 from datetime import datetime
 from flask_cors import CORS
 import random
-import pandas as pd
-import io
 import openpyxl
 from io import BytesIO
-from flask_cors import CORS
 
 app = Flask(__name__)
 
@@ -24,13 +21,13 @@ CORS(app, resources={
     }
 })
 
-# CORS(app, resources={r"/api/*": {"origins": "http://localhost:5173"}}, supports_credentials=True)
 app.config.from_object(Config)
 db.init_app(app)
 jwt = JWTManager(app)
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
-# Create tables
+
+# Create tables only once at startup
 with app.app_context():
     db.create_all()
 
@@ -49,6 +46,9 @@ def after_request(response):
     response.headers["Access-Control-Allow-Origin"] = "http://localhost:5173"
     response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    # Ensure session is committed and closed after each request
+    db.session.commit()
+    db.session.remove()
     return response
 
 @jwt.unauthorized_loader
@@ -65,6 +65,7 @@ def invalid_token_response(callback):
 def expired_token_response(jwt_header, jwt_payload):
     logger.error(f"Expired token: {jwt_payload}")
     return jsonify({'message': 'Token has expired'}), 401
+
 # Login API
 @app.route('/api/login', methods=['POST'])
 def login():
@@ -76,7 +77,6 @@ def login():
     if not faculty or faculty.mobile_number != password:
         return jsonify({'success': False, 'message': 'Invalid credentials'}), 401
 
-    # Cast faculty_id to string
     access_token = create_access_token(identity=str(faculty.faculty_id))
     return jsonify({
         'success': True,
@@ -124,7 +124,6 @@ def mark_attendance():
         attendance = Attendance(faculty_id=faculty_id, date=date, is_present=True)
         db.session.add(attendance)
     db.session.commit()
-
     return jsonify({'success': True, 'message': 'Attendance marked successfully'})
 
 # Get Attendance Records (Admin only)
@@ -161,7 +160,6 @@ def get_venues():
         'capacity': v.capacity
     } for v in venues])
 
-
 @app.route('/api/venues', methods=['POST'])
 @jwt_required()
 def add_venue():
@@ -196,7 +194,9 @@ def get_faculty():
     if not faculty or not faculty.is_admin:
         return jsonify({'message': 'Unauthorized'}), 403
 
-    faculty_list = Faculty.query.limit(50).all()  # Limit to 50 faculty
+    # Expire all cached objects to ensure fresh data
+    db.session.expire_all()
+    faculty_list = Faculty.query.all()  # Limit to 50 faculty
     return jsonify([{
         'faculty_id': f.faculty_id,
         'name': f.name,
@@ -209,7 +209,7 @@ def get_faculty():
 @jwt_required()
 def add_faculty():
     faculty_id = get_jwt_identity()
-    faculty = Faculty.query.get(faculty_id)
+    faculty = db.session.get(Faculty, faculty_id)
     if not faculty or not faculty.is_admin:
         return jsonify({'message': 'Unauthorized'}), 403
     data = request.get_json()
@@ -239,6 +239,8 @@ def delete_faculty(faculty_id):
 @app.route('/api/allocations', methods=['GET'])
 @jwt_required()
 def get_allocations():
+    # Expire all cached objects to ensure fresh data
+    db.session.expire_all()
     allocations = VenueAllocation.query.join(Faculty).join(Venue).all()
     return jsonify([{
         'allocation_id': a.allocation_id,
@@ -252,12 +254,12 @@ def get_allocations():
         'is_present': a.faculty.attendances[-1].is_present if a.faculty.attendances else False
     } for a in allocations])
 
-
 @app.route('/api/allocations/generate', methods=['POST'])
 @jwt_required()
 def generate_allocations():
     faculty_id = get_jwt_identity()
-    faculty = Faculty.query.get(faculty_id)
+    faculty = db.session.get(Faculty, faculty_id)  # Updated from Faculty.query.get(faculty_id)
+
     if not faculty or not faculty.is_admin:
         return jsonify({'message': 'Unauthorized'}), 403
     data = request.get_json()
@@ -267,8 +269,13 @@ def generate_allocations():
 
     venues = Venue.query.all()
     faculty_list = Faculty.query.filter_by(is_admin=False).all()  # Exclude admins
+
     if len(faculty_list) < len(venues) * faculty_per_venue:
-        return jsonify({'message': 'Not enough faculty available'}), 400
+        required = len(venues) * faculty_per_venue
+    available = len(faculty_list)
+    return jsonify({
+        'message': f'Not enough faculty available: {required} needed, but only {available} available'
+    }), 400
 
     # Clear existing allocations for the date and time slot
     VenueAllocation.query.filter_by(date=date, time_slot=time_slot).delete()
@@ -298,50 +305,136 @@ def generate_allocations():
 @jwt_required()
 def bulk_import_faculty():
     faculty_id = get_jwt_identity()
-    faculty = Faculty.query.get(faculty_id)
+    faculty = db.session.get(Faculty, faculty_id)
     if not faculty or not faculty.is_admin:
         return jsonify({'message': 'Unauthorized'}), 403
+
+    if 'file' not in request.files:
+        return jsonify({'message': 'No file part in the request'}), 400
+    print("Request files:", request.files)
 
     file = request.files['file']
     if not file.filename.endswith('.xlsx'):
         return jsonify({'message': 'Please upload an XLSX file'}), 400
 
-    workbook = openpyxl.load_workbook(BytesIO(file.read()))
-    sheet = workbook.active
-    for row in sheet.iter_rows(min_row=2, values_only=True):
-        faculty = Faculty(
-            name=row[0],
-            mobile_number=str(row[1]),
-            email_id=row[2],
-            is_admin=bool(row[3] if len(row) > 3 else False)
-        )
-        db.session.add(faculty)
-    db.session.commit()
-    return jsonify({'success': True, 'message': 'Faculty imported successfully'})
+    try:
+        workbook = openpyxl.load_workbook(BytesIO(file.read()))
+        sheet = workbook.active
+
+        # Expected column headers
+        expected_headers = ['faculty_id', 'name', 'mobile_number', 'email_id', 'is_admin']
+        headers = [cell.value.lower() if cell.value else '' for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
+
+        if not all(h in headers for h in expected_headers):
+            return jsonify({'message': 'Invalid Excel format. Required columns: faculty_id, name, mobile_number, email_id, is_admin'}), 400
+
+        imported_count = 0
+        updated_count = 0
+
+        for row in sheet.iter_rows(min_row=2, values_only=True):
+            if len(row) < 5:
+                continue
+
+            faculty_id = row[0]
+            existing_faculty = Faculty.query.get(faculty_id) if faculty_id else None
+
+            if existing_faculty:
+                # Update existing faculty
+                existing_faculty.name = row[1]
+                existing_faculty.mobile_number = str(row[2])
+                existing_faculty.email_id = row[3]
+                existing_faculty.is_admin = bool(row[4])
+                updated_count += 1
+            else:
+                # Insert new faculty
+                new_faculty = Faculty(
+                    faculty_id=faculty_id,
+                    name=row[1],
+                    mobile_number=str(row[2]),
+                    email_id=row[3],
+                    is_admin=bool(row[4])
+                )
+                db.session.add(new_faculty)
+                imported_count += 1
+
+        db.session.commit()
+        # Expire all cached objects after commit to ensure fresh data on next query
+        db.session.expire_all()
+        return jsonify({
+            'success': True,
+            'message': f'Successfully imported {imported_count} new faculty and updated {updated_count} existing faculty'
+        })
+
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error during faculty bulk import: {str(e)}")
+        return jsonify({'message': f'Error processing file: {str(e)}'}), 500
 
 @app.route('/api/bulk-import/venues', methods=['POST'])
 @jwt_required()
 def bulk_import_venues():
     faculty_id = get_jwt_identity()
-    faculty = Faculty.query.get(faculty_id)
+    faculty = db.session.get(Faculty, faculty_id)
     if not faculty or not faculty.is_admin:
         return jsonify({'message': 'Unauthorized'}), 403
+
+    if 'file' not in request.files:
+        return jsonify({'message': 'No file part in the request'}), 400
 
     file = request.files['file']
     if not file.filename.endswith('.xlsx'):
         return jsonify({'message': 'Please upload an XLSX file'}), 400
 
-    workbook = openpyxl.load_workbook(BytesIO(file.read()))
-    sheet = workbook.active
-    for row in sheet.iter_rows(min_row=2, values_only=True):
-        venue = Venue(
-            name=row[0],
-            location=row[1],
-            capacity=int(row[2])
-        )
-        db.session.add(venue)
-    db.session.commit()
-    return jsonify({'success': True, 'message': 'Venues imported successfully'})
+    try:
+        workbook = openpyxl.load_workbook(BytesIO(file.read()))
+        sheet = workbook.active
+
+        # Expected column headers
+        expected_headers = ['venue_id', 'name', 'location', 'capacity']
+        headers = [cell.value.lower() if cell.value else '' for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
+
+        if not all(h in headers for h in expected_headers):
+            return jsonify({'message': 'Invalid Excel format. Required columns: venue_id, name, location, capacity'}), 400
+
+        imported_count = 0
+        updated_count = 0
+
+        for row in sheet.iter_rows(min_row=2, values_only=True):
+            if len(row) < 4:
+                continue
+
+            venue_id = row[0]
+            existing_venue = Venue.query.get(venue_id) if venue_id else None
+
+            if existing_venue:
+                # Update existing venue
+                existing_venue.name = row[1]
+                existing_venue.location = row[2]
+                existing_venue.capacity = int(row[3])
+                updated_count += 1
+            else:
+                # Insert new venue
+                new_venue = Venue(
+                    venue_id=venue_id,
+                    name=row[1],
+                    location=row[2],
+                    capacity=int(row[3])
+                )
+                db.session.add(new_venue)
+                imported_count += 1
+
+        db.session.commit()
+        # Expire all cached objects after commit to ensure fresh data on next query
+        db.session.expire_all()
+        return jsonify({
+            'success': True,
+            'message': f'Successfully imported {imported_count} new venues and updated {updated_count} existing venues'
+        })
+
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error during venue bulk import: {str(e)}")
+        return jsonify({'message': f'Error processing file: {str(e)}'}), 500
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)

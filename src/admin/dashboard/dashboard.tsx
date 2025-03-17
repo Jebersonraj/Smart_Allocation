@@ -7,6 +7,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import AdminHeader from "@/components/admin-header";
 import { Calendar, FileText, MapPin, Users, UserPlus, Download, Upload, LogOut } from "lucide-react";
 import { Input } from "@/components/ui/input.tsx";
+import { Label } from "@/components/ui/label";
 
 export default function AdminDashboard() {
     const [activeTab, setActiveTab] = useState("overview");
@@ -14,6 +15,8 @@ export default function AdminDashboard() {
     const [venueCount, setVenueCount] = useState(0);
     const [allocationCount, setAllocationCount] = useState(0);
     const [recentAllocations, setRecentAllocations] = useState([]);
+    const [facultyFile, setFacultyFile] = useState<File | null>(null);
+    const [venueFile, setVenueFile] = useState<File | null>(null);
     const navigate = useNavigate();
 
     useEffect(() => {
@@ -36,7 +39,6 @@ export default function AdminDashboard() {
         return {
             headers: {
                 Authorization: `Bearer ${token}`,
-                'Content-Type': 'application/json'
             }
         };
     };
@@ -87,24 +89,57 @@ export default function AdminDashboard() {
         }
     };
 
-    const handleBulkImport = async (type: string, event: React.ChangeEvent<HTMLInputElement>) => {
-        const file = event.target.files?.[0];
-        if (!file) return;
-
-        const formData = new FormData();
-        formData.append('file', file);
-        try {
-            await axios.post(`http://localhost:5000/api/bulk-import/${type}`, formData, {
-                ...getAuthHeaders(),
-                'Content-Type': 'multipart/form-data'
-            });
-            fetchCounts();
-            fetchRecentAllocations();
-        } catch (error) {
-            console.error('Bulk import error:', error);
+    const handleFileChange = (type: string, event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0] || null;
+        if (type === 'faculty') {
+            setFacultyFile(file);
+        } else if (type === 'venues') {
+            setVenueFile(file);
         }
     };
 
+    const handleBulkImport = async (type: string) => {
+        const file = type === 'faculty' ? facultyFile : venueFile;
+        if (!file) {
+            console.error('No file selected for', type);
+            alert(`Please select a file to upload for ${type}`);
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        try {
+            const headers = getAuthHeaders();
+            // Do not manually set Content-Type for FormData; let the browser handle it
+            const response = await axios.post(
+                `http://localhost:5000/api/bulk-import/${type}`,
+                formData,
+                {
+                    ...headers,
+                    // Axios will automatically set the correct Content-Type with boundary for FormData
+                }
+            );
+            console.log('Success:', response.data.message);
+            alert(response.data.message); // Show success message to user
+            fetchCounts(); // Refresh counts after import
+            fetchRecentAllocations(); // Refresh allocations if affected
+            // Reset file state and input
+            if (type === 'faculty') setFacultyFile(null);
+            else setVenueFile(null);
+            // Reset the file input field
+            const inputElement = document.getElementById(`${type}-upload`) as HTMLInputElement;
+            if (inputElement) inputElement.value = '';
+        } catch (error) {
+            if (axios.isAxiosError(error)) {
+                console.error('Bulk import error:', error.response?.data.message || "Failed to import data");
+                alert(`Bulk import failed: ${error.response?.data.message || "Unknown error"}`);
+            } else {
+                console.error('Bulk import error:', "An unexpected error occurred");
+                alert("An unexpected error occurred during bulk import");
+            }
+        }
+    };
 
     return (
         <div className="flex min-h-screen flex-col">
@@ -166,28 +201,52 @@ export default function AdminDashboard() {
                             </TabsContent>
                             <TabsContent value="quick-actions" className="space-y-4">
                                 <Card>
-                                    <CardHeader><CardTitle>Bulk Import</CardTitle></CardHeader>
+                                    <CardHeader>
+                                        <CardTitle>Bulk Import</CardTitle>
+                                        <CardDescription>Upload Excel files to import faculty or venues</CardDescription>
+                                    </CardHeader>
                                     <CardContent className="space-y-4">
-                                        <div>
-                                            <label className="block text-sm font-medium mb-1">Import Faculty</label>
-                                            <Input
-                                                id="faculty-upload"
-                                                type="file"
-                                                accept=".xlsx"
-                                                className="hidden"
-                                                onChange={(e) => handleBulkImport('faculty', e)}
-                                            />
-
+                                        <div className="space-y-2">
+                                            <Label htmlFor="faculty-upload">Import Faculty</Label>
+                                            <div className="flex items-center space-x-2">
+                                                <Input
+                                                    id="faculty-upload"
+                                                    type="file"
+                                                    accept=".xlsx"
+                                                    onChange={(e) => handleFileChange('faculty', e)}
+                                                    className="file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary file:text-primary-foreground hover:file:bg-primary/90"
+                                                />
+                                                <Button
+                                                    onClick={() => handleBulkImport('faculty')}
+                                                    disabled={!facultyFile}
+                                                >
+                                                    Upload Faculty
+                                                </Button>
+                                            </div>
+                                            <p className="text-sm text-muted-foreground">
+                                                Required columns: faculty_id, name, mobile_number, email_id, is_admin
+                                            </p>
                                         </div>
-                                        <div>
-                                            <label className="block text-sm font-medium mb-1">Import Venues</label>
-                                            <Input
-                                                id="venues-upload"
-                                                type="file"
-                                                accept=".xlsx"
-                                                className="hidden"
-                                                onChange={(e) => handleBulkImport('venues', e)}
-                                            />
+                                        <div className="space-y-2">
+                                            <Label htmlFor="venues-upload">Import Venues</Label>
+                                            <div className="flex items-center space-x-2">
+                                                <Input
+                                                    id="venues-upload"
+                                                    type="file"
+                                                    accept=".xlsx"
+                                                    onChange={(e) => handleFileChange('venues', e)}
+                                                    className="file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary file:text-primary-foreground hover:file:bg-primary/90"
+                                                />
+                                                <Button
+                                                    onClick={() => handleBulkImport('venues')}
+                                                    disabled={!venueFile}
+                                                >
+                                                    Upload Venues
+                                                </Button>
+                                            </div>
+                                            <p className="text-sm text-muted-foreground">
+                                                Required columns: venue_id, name, location, capacity
+                                            </p>
                                         </div>
                                     </CardContent>
                                 </Card>

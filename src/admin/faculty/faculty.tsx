@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom"; // Add this
+import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,7 +15,9 @@ export default function FacultyManagement() {
     const [searchTerm, setSearchTerm] = useState("");
     const [newFaculty, setNewFaculty] = useState({ name: "", mobile_number: "", email_id: "", is_admin: false });
     const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
-    const navigate = useNavigate(); // Add this
+    const [currentPage, setCurrentPage] = useState(1); // Pagination state
+    const itemsPerPage = 10; // Number of items per page
+    const navigate = useNavigate();
 
     useEffect(() => {
         fetchFaculty();
@@ -48,11 +50,24 @@ export default function FacultyManagement() {
         }
     };
 
+    // Filter faculty with null checks (applies to all pages)
     const filteredFaculty = faculty.filter(f =>
-        f.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        f.email_id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        f.mobile_number.includes(searchTerm)
+        (f.name?.toLowerCase()?.includes(searchTerm.toLowerCase()) || false) ||
+        (f.email_id?.toLowerCase()?.includes(searchTerm.toLowerCase()) || false) ||
+        (f.mobile_number?.includes(searchTerm) || false)
     );
+
+    // Pagination logic based on filtered results
+    const totalPages = Math.ceil(filteredFaculty.length / itemsPerPage);
+    const paginatedFaculty = filteredFaculty.slice(
+        (currentPage - 1) * itemsPerPage,
+        currentPage * itemsPerPage
+    );
+
+    // Reset to page 1 when search term changes to ensure visibility of results
+    useEffect(() => {
+        setCurrentPage(1);
+    }, [searchTerm]);
 
     const handleAddFaculty = async () => {
         const token = localStorage.getItem('token');
@@ -80,7 +95,6 @@ export default function FacultyManagement() {
         }
     };
 
-    // Rest of your component remains unchanged...
     return (
         <div className="flex min-h-screen flex-col">
             <AdminHeader />
@@ -124,7 +138,12 @@ export default function FacultyManagement() {
                     <CardContent>
                         <div className="mb-4 flex items-center gap-2">
                             <Search className="h-4 w-4 text-muted-foreground" />
-                            <Input placeholder="Search faculty..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="max-w-sm" />
+                            <Input
+                                placeholder="Search faculty..."
+                                value={searchTerm}
+                                onChange={e => setSearchTerm(e.target.value)}
+                                className="max-w-sm"
+                            />
                         </div>
                         <div className="rounded-md border">
                             <Table>
@@ -138,23 +157,47 @@ export default function FacultyManagement() {
                                     </TableRow>
                                 </TableHeader>
                                 <TableBody>
-                                    {filteredFaculty.map(f => (
-                                        <TableRow key={f.faculty_id}>
-                                            <TableCell>{f.faculty_id}</TableCell>
-                                            <TableCell>{f.name}</TableCell>
-                                            <TableCell>{f.mobile_number}</TableCell>
-                                            <TableCell>{f.email_id}</TableCell>
-                                            <TableCell>
-                                                <div className="flex space-x-2">
-                                                    <Button variant="ghost" size="icon"><Pencil className="h-4 w-4" /></Button>
-                                                    <Button variant="ghost" size="icon" className="text-red-500" onClick={() => handleDeleteFaculty(f.faculty_id)}><Trash2 className="h-4 w-4" /></Button>
-                                                </div>
-                                            </TableCell>
+                                    {paginatedFaculty.length > 0 ? (
+                                        paginatedFaculty.map(f => (
+                                            <TableRow key={f.faculty_id}>
+                                                <TableCell>{f.faculty_id}</TableCell>
+                                                <TableCell>{f.name || 'N/A'}</TableCell>
+                                                <TableCell>{f.mobile_number || 'N/A'}</TableCell>
+                                                <TableCell>{f.email_id || 'N/A'}</TableCell>
+                                                <TableCell>
+                                                    <div className="flex space-x-2">
+                                                        <Button variant="ghost" size="icon"><Pencil className="h-4 w-4" /></Button>
+                                                        <Button variant="ghost" size="icon" className="text-red-500" onClick={() => handleDeleteFaculty(f.faculty_id)}><Trash2 className="h-4 w-4" /></Button>
+                                                    </div>
+                                                </TableCell>
+                                            </TableRow>
+                                        ))
+                                    ) : (
+                                        <TableRow>
+                                            <TableCell colSpan={5} className="text-center">No faculty found</TableCell>
                                         </TableRow>
-                                    ))}
+                                    )}
                                 </TableBody>
                             </Table>
                         </div>
+                        {/* Pagination Controls */}
+                        {totalPages > 0 && (
+                            <div className="mt-4 flex justify-between items-center">
+                                <Button
+                                    disabled={currentPage === 1}
+                                    onClick={() => setCurrentPage(prev => prev - 1)}
+                                >
+                                    Previous
+                                </Button>
+                                <span>Page {currentPage} of {totalPages}</span>
+                                <Button
+                                    disabled={currentPage === totalPages}
+                                    onClick={() => setCurrentPage(prev => prev + 1)}
+                                >
+                                    Next
+                                </Button>
+                            </div>
+                        )}
                     </CardContent>
                 </Card>
             </div>
