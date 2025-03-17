@@ -1,70 +1,93 @@
 import { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import axios from "axios";
+import axios, { AxiosError } from "axios";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import AdminHeader from "@/components/admin-header";
-import { Calendar, FileText, MapPin, Users, UserPlus, Download, Upload, LogOut } from "lucide-react";
+import { FileText, MapPin, Users, UserPlus, LogOut } from "lucide-react";
 import { Input } from "@/components/ui/input.tsx";
 import { Label } from "@/components/ui/label";
 
+interface Allocation {
+    allocation_id: number;
+    faculty_name: string;
+    venue_name: string;
+    date: string;
+    time_slot: string;
+}
+
+interface AuthHeaders {
+    headers?: {
+        Authorization: string;
+    };
+}
+
+interface ErrorResponse {
+    message?: string;
+}
+
+interface SuccessResponse {
+    message: string;
+}
+
 export default function AdminDashboard() {
-    const [activeTab, setActiveTab] = useState("overview");
-    const [facultyCount, setFacultyCount] = useState(0);
-    const [venueCount, setVenueCount] = useState(0);
-    const [allocationCount, setAllocationCount] = useState(0);
-    const [recentAllocations, setRecentAllocations] = useState([]);
+    const [activeTab, setActiveTab] = useState<"overview" | "quick-actions">("overview");
+    const [facultyCount, setFacultyCount] = useState<number>(0);
+    const [venueCount, setVenueCount] = useState<number>(0);
+    const [allocationCount, setAllocationCount] = useState<number>(0);
+    const [recentAllocations, setRecentAllocations] = useState<Allocation[]>([]);
     const [facultyFile, setFacultyFile] = useState<File | null>(null);
     const [venueFile, setVenueFile] = useState<File | null>(null);
     const navigate = useNavigate();
 
     useEffect(() => {
-        const token = localStorage.getItem('token');
+        const token = localStorage.getItem("token");
         if (!token) {
-            navigate('/login?role=admin');
+            navigate("/login?role=admin");
             return;
         }
         fetchCounts();
         fetchRecentAllocations();
     }, [navigate]);
 
-    const getAuthHeaders = () => {
-        const token = localStorage.getItem('token');
-        console.log('Token being sent:', token);
+    const getAuthHeaders = (): AuthHeaders => {
+        const token = localStorage.getItem("token");
+        console.log("Token being sent:", token);
         if (!token) {
-            navigate('/login?role=admin');
+            navigate("/login?role=admin");
             return {};
         }
         return {
             headers: {
                 Authorization: `Bearer ${token}`,
-            }
+            },
         };
     };
 
     const fetchCounts = async () => {
         try {
             const headers = getAuthHeaders();
-            if (!headers.headers.Authorization) return;
+            if (!headers.headers?.Authorization) return;
 
             const [facultyRes, venueRes, allocRes] = await Promise.all([
-                axios.get('http://localhost:5000/api/faculty', headers),
-                axios.get('http://localhost:5000/api/venues', headers),
-                axios.get('http://localhost:5000/api/allocations', headers)
+                axios.get("http://localhost:5000/api/faculty", headers),
+                axios.get("http://localhost:5000/api/venues", headers),
+                axios.get("http://localhost:5000/api/allocations", headers),
             ]);
             setFacultyCount(facultyRes.data.length);
             setVenueCount(venueRes.data.length);
             setAllocationCount(allocRes.data.length);
         } catch (error) {
-            if (axios.isAxiosError(error)) {
-                console.error('Fetch counts error:', error.response?.status, error.response?.data);
-                if (error.response?.status === 401 || error.response?.status === 422) {
-                    localStorage.removeItem('token');
-                    navigate('/login?role=admin');
+            const axiosError = error as AxiosError<ErrorResponse>;
+            if (axiosError.response) {
+                console.error("Fetch counts error:", axiosError.response.status, axiosError.response.data?.message);
+                if (axiosError.response.status === 401 || axiosError.response.status === 422) {
+                    localStorage.removeItem("token");
+                    navigate("/login?role=admin");
                 }
             } else {
-                console.error('Unexpected error:', error);
+                console.error("Unexpected error:", error);
             }
         }
     };
@@ -72,72 +95,74 @@ export default function AdminDashboard() {
     const fetchRecentAllocations = async () => {
         try {
             const headers = getAuthHeaders();
-            if (!headers.headers.Authorization) return;
+            if (!headers.headers?.Authorization) return;
 
-            const response = await axios.get('http://localhost:5000/api/allocations', headers);
+            const response = await axios.get<Allocation[]>("http://localhost:5000/api/allocations", headers);
             setRecentAllocations(response.data.slice(0, 5));
         } catch (error) {
-            if (axios.isAxiosError(error)) {
-                console.error('Fetch allocations error:', error.response?.status, error.response?.data);
-                if (error.response?.status === 401 || error.response?.status === 422) {
-                    localStorage.removeItem('token');
-                    navigate('/login?role=admin');
+            const axiosError = error as AxiosError<ErrorResponse>;
+            if (axiosError.response) {
+                console.error("Fetch allocations error:", axiosError.response.status, axiosError.response.data?.message);
+                if (axiosError.response.status === 401 || axiosError.response.status === 422) {
+                    localStorage.removeItem("token");
+                    navigate("/login?role=admin");
                 }
             } else {
-                console.error('Unexpected error:', error);
+                console.error("Unexpected error:", error);
             }
         }
     };
 
-    const handleFileChange = (type: string, event: React.ChangeEvent<HTMLInputElement>) => {
+    const handleFileChange = (type: "faculty" | "venues", event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0] || null;
-        if (type === 'faculty') {
+        if (type === "faculty") {
             setFacultyFile(file);
-        } else if (type === 'venues') {
+        } else if (type === "venues") {
             setVenueFile(file);
         }
     };
 
-    const handleBulkImport = async (type: string) => {
-        const file = type === 'faculty' ? facultyFile : venueFile;
+    const handleBulkImport = async (type: "faculty" | "venues") => {
+        const file = type === "faculty" ? facultyFile : venueFile;
         if (!file) {
-            console.error('No file selected for', type);
+            console.error("No file selected for", type);
             alert(`Please select a file to upload for ${type}`);
             return;
         }
 
         const formData = new FormData();
-        formData.append('file', file);
+        formData.append("file", file);
 
         try {
             const headers = getAuthHeaders();
-            // Do not manually set Content-Type for FormData; let the browser handle it
-            const response = await axios.post(
+            const response = await axios.post<SuccessResponse>(
                 `http://localhost:5000/api/bulk-import/${type}`,
                 formData,
-                {
-                    ...headers,
-                    // Axios will automatically set the correct Content-Type with boundary for FormData
-                }
+                headers
             );
-            console.log('Success:', response.data.message);
-            alert(response.data.message); // Show success message to user
-            fetchCounts(); // Refresh counts after import
-            fetchRecentAllocations(); // Refresh allocations if affected
-            // Reset file state and input
-            if (type === 'faculty') setFacultyFile(null);
+            console.log("Success:", response.data.message);
+            alert(response.data.message);
+            fetchCounts();
+            fetchRecentAllocations();
+            if (type === "faculty") setFacultyFile(null);
             else setVenueFile(null);
-            // Reset the file input field
             const inputElement = document.getElementById(`${type}-upload`) as HTMLInputElement;
-            if (inputElement) inputElement.value = '';
+            if (inputElement) inputElement.value = "";
         } catch (error) {
-            if (axios.isAxiosError(error)) {
-                console.error('Bulk import error:', error.response?.data.message || "Failed to import data");
-                alert(`Bulk import failed: ${error.response?.data.message || "Unknown error"}`);
+            const axiosError = error as AxiosError<ErrorResponse>;
+            if (axiosError.response) {
+                console.error("Bulk import error:", axiosError.response.data?.message || "Failed to import data");
+                alert(`Bulk import failed: ${axiosError.response.data?.message || "Unknown error"}`);
             } else {
-                console.error('Bulk import error:', "An unexpected error occurred");
+                console.error("Bulk import error:", "An unexpected error occurred");
                 alert("An unexpected error occurred during bulk import");
             }
+        }
+    };
+
+    const handleTabChange = (value: string) => {
+        if (value === "overview" || value === "quick-actions") {
+            setActiveTab(value);
         }
     };
 
@@ -153,7 +178,7 @@ export default function AdminDashboard() {
                                 <nav className="space-y-2">
                                     <Link to="/admin/faculty"><Button variant="ghost" className="w-full justify-start"><Users className="mr-2 h-4 w-4" /> Faculty Management</Button></Link>
                                     <Link to="/admin/venues"><Button variant="ghost" className="w-full justify-start"><MapPin className="mr-2 h-4 w-4" /> Venue Management</Button></Link>
-                                    <Link to="/admin/allocations"><Button variant="ghost" className="w-full justify-start"><Calendar className="mr-2 h-4 w-4" /> Allocations</Button></Link>
+                                    <Link to="/admin/allocations"><Button variant="ghost" className="w-full justify-start"><FileText className="mr-2 h-4 w-4" /> Allocations</Button></Link>
                                     <Link to="/admin/attendance"><Button variant="ghost" className="w-full justify-start"><FileText className="mr-2 h-4 w-4" /> Attendance Records</Button></Link>
                                     <Link to="/admin/external"><Button variant="ghost" className="w-full justify-start"><UserPlus className="mr-2 h-4 w-4" /> External Faculty</Button></Link>
                                     <Link to="/logout"><Button variant="ghost" className="w-full justify-start text-red-500"><LogOut className="mr-2 h-4 w-4" /> Logout</Button></Link>
@@ -162,7 +187,7 @@ export default function AdminDashboard() {
                         </Card>
                     </div>
                     <div className="md:col-span-3">
-                        <Tabs value={activeTab} onValueChange={setActiveTab}>
+                        <Tabs value={activeTab} onValueChange={handleTabChange}>
                             <TabsList className="grid w-full grid-cols-2">
                                 <TabsTrigger value="overview">Overview</TabsTrigger>
                                 <TabsTrigger value="quick-actions">Quick Actions</TabsTrigger>
@@ -189,7 +214,7 @@ export default function AdminDashboard() {
                                     </CardHeader>
                                     <CardContent>
                                         <div className="space-y-2">
-                                            {recentAllocations.map((alloc: any) => (
+                                            {recentAllocations.map((alloc) => (
                                                 <div key={alloc.allocation_id} className="flex justify-between text-sm">
                                                     <span>{alloc.faculty_name} → {alloc.venue_name}</span>
                                                     <span>{alloc.date} ({alloc.time_slot})</span>
@@ -213,11 +238,11 @@ export default function AdminDashboard() {
                                                     id="faculty-upload"
                                                     type="file"
                                                     accept=".xlsx"
-                                                    onChange={(e) => handleFileChange('faculty', e)}
+                                                    onChange={(e) => handleFileChange("faculty", e)}
                                                     className="file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary file:text-primary-foreground hover:file:bg-primary/90"
                                                 />
                                                 <Button
-                                                    onClick={() => handleBulkImport('faculty')}
+                                                    onClick={() => handleBulkImport("faculty")}
                                                     disabled={!facultyFile}
                                                 >
                                                     Upload Faculty
@@ -234,11 +259,11 @@ export default function AdminDashboard() {
                                                     id="venues-upload"
                                                     type="file"
                                                     accept=".xlsx"
-                                                    onChange={(e) => handleFileChange('venues', e)}
+                                                    onChange={(e) => handleFileChange("venues", e)}
                                                     className="file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary file:text-primary-foreground hover:file:bg-primary/90"
                                                 />
                                                 <Button
-                                                    onClick={() => handleBulkImport('venues')}
+                                                    onClick={() => handleBulkImport("venues")}
                                                     disabled={!venueFile}
                                                 >
                                                     Upload Venues

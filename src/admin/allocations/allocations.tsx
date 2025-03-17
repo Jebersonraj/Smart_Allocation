@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import axios from "axios";
+import axios, { AxiosError } from "axios"; // Import AxiosError
 import { jsPDF } from "jspdf";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,12 +11,18 @@ import { Calendar, Download, RefreshCw, AlertTriangle } from "lucide-react";
 import AdminHeader from "@/components/admin-header";
 import { Label } from "@radix-ui/react-label";
 
+// Define interfaces for data structures
 interface Allocation {
     allocation_id?: string;
     faculty_name?: string;
     venue_name?: string;
     date?: string;
     time_slot?: string;
+}
+
+// Define interface for error response from the API
+interface ErrorResponse {
+    message?: string;
 }
 
 export default function AllocationManagement() {
@@ -34,12 +40,13 @@ export default function AllocationManagement() {
 
     const fetchAllocations = async () => {
         try {
-            const response = await axios.get<Allocation[]>('http://localhost:5000/api/allocations', {
-                headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+            const response = await axios.get<Allocation[]>("http://localhost:5000/api/allocations", {
+                headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
             });
             setAllocations(response.data || []);
         } catch (error) {
-            console.error('Error fetching allocations:', error);
+            const axiosError = error as AxiosError<ErrorResponse>; // Type error as AxiosError
+            console.error("Error fetching allocations:", axiosError.response?.data?.message || error);
             setAllocations([]);
         }
     };
@@ -47,7 +54,7 @@ export default function AllocationManagement() {
     const filteredAllocations = selectedDate === "all"
         ? allocations
         : allocations.filter((a): a is Allocation => a.date === selectedDate);
-    const uniqueDates = [...new Set(allocations.map(a => a.date).filter(Boolean))] as string[];
+    const uniqueDates = [...new Set(allocations.map((a) => a.date).filter(Boolean))] as string[];
 
     const handleGenerateAllocations = async () => {
         if (!date) {
@@ -56,20 +63,25 @@ export default function AllocationManagement() {
         }
         setIsGenerating(true);
         try {
-            await axios.post('http://localhost:5000/api/allocations/generate', {
-                date,
-                time_slot: timeSlot,
-                faculty_per_venue: parseInt(facultyPerVenue)
-            }, {
-                headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
-            });
+            await axios.post(
+                "http://localhost:5000/api/allocations/generate",
+                {
+                    date,
+                    time_slot: timeSlot,
+                    faculty_per_venue: parseInt(facultyPerVenue),
+                },
+                {
+                    headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+                }
+            );
             setShowSuccess(true);
             await fetchAllocations();
             setTimeout(() => setShowSuccess(false), 3000);
         } catch (error) {
-            console.error('Error generating allocations:', error);
-            const errorMessage = error.response?.data?.message || 'Failed to generate allocations';
-            alert(errorMessage);  // Or use a UI component like <Alert>
+            const axiosError = error as AxiosError<ErrorResponse>; // Type error as AxiosError
+            console.error("Error generating allocations:", axiosError.response?.data?.message || error);
+            const errorMessage = axiosError.response?.data?.message || "Failed to generate allocations";
+            alert(errorMessage); // Or use a UI component like <Alert>
         } finally {
             setIsGenerating(false);
         }
@@ -79,15 +91,15 @@ export default function AllocationManagement() {
         const doc = new jsPDF();
 
         doc.setFontSize(18);
-        doc.text('Venue Allocations', 14, 20);
+        doc.text("Venue Allocations", 14, 20);
 
-        const headers = ['ID', 'Faculty', 'Venue', 'Date', 'Time'];
-        const data = filteredAllocations.map(a => [
-            String(a.allocation_id || 'N/A'),
-            String(a.faculty_name || 'Unknown'),
-            String(a.venue_name || 'Unknown'),
-            String(a.date || 'N/A'),
-            String(a.time_slot || 'N/A')
+        const headers = ["ID", "Faculty", "Venue", "Date", "Time"];
+        const data = filteredAllocations.map((a) => [
+            String(a.allocation_id || "N/A"),
+            String(a.faculty_name || "Unknown"),
+            String(a.venue_name || "Unknown"),
+            String(a.date || "N/A"),
+            String(a.time_slot || "N/A"),
         ]);
 
         doc.setFontSize(11);
@@ -103,7 +115,7 @@ export default function AllocationManagement() {
 
         // Draw data rows
         data.forEach((row, rowIndex) => {
-            const yPosition = startY + 10 + (rowIndex * rowHeight);
+            const yPosition = startY + 10 + rowIndex * rowHeight;
             row.forEach((cell, cellIndex) => {
                 const text = String(cell);
                 // Split text if it's too long
@@ -120,7 +132,6 @@ export default function AllocationManagement() {
         doc.save(`allocations_${selectedDate}.pdf`);
     };
 
-    // Rest of the component remains the same...
     return (
         <div className="flex min-h-screen flex-col">
             <AdminHeader />
@@ -159,12 +170,14 @@ export default function AllocationManagement() {
                         <div className="mb-4 grid grid-cols-1 md:grid-cols-4 gap-4">
                             <div>
                                 <Label>Date</Label>
-                                <Input type="date" value={date} onChange={e => setDate(e.target.value)} />
+                                <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
                             </div>
                             <div>
                                 <Label>Time Slot</Label>
                                 <Select value={timeSlot} onValueChange={setTimeSlot}>
-                                    <SelectTrigger><SelectValue /></SelectTrigger>
+                                    <SelectTrigger>
+                                        <SelectValue />
+                                    </SelectTrigger>
                                     <SelectContent>
                                         <SelectItem value="08:00-12:00">08:00 AM - 12:00 PM</SelectItem>
                                         <SelectItem value="12:00-15:00">12:00 PM - 03:00 PM</SelectItem>
@@ -174,7 +187,9 @@ export default function AllocationManagement() {
                             <div>
                                 <Label>Faculty per Venue</Label>
                                 <Select value={facultyPerVenue} onValueChange={setFacultyPerVenue}>
-                                    <SelectTrigger><SelectValue /></SelectTrigger>
+                                    <SelectTrigger>
+                                        <SelectValue />
+                                    </SelectTrigger>
                                     <SelectContent>
                                         <SelectItem value="1">1</SelectItem>
                                         <SelectItem value="2">2</SelectItem>
@@ -184,11 +199,15 @@ export default function AllocationManagement() {
                             <div>
                                 <Label>Filter by Date</Label>
                                 <Select value={selectedDate} onValueChange={setSelectedDate}>
-                                    <SelectTrigger><SelectValue /></SelectTrigger>
+                                    <SelectTrigger>
+                                        <SelectValue />
+                                    </SelectTrigger>
                                     <SelectContent>
                                         <SelectItem value="all">All Dates</SelectItem>
-                                        {uniqueDates.map(date => (
-                                            <SelectItem key={date} value={date}>{date}</SelectItem>
+                                        {uniqueDates.map((date) => (
+                                            <SelectItem key={date} value={date}>
+                                                {date}
+                                            </SelectItem>
                                         ))}
                                     </SelectContent>
                                 </Select>
@@ -207,13 +226,13 @@ export default function AllocationManagement() {
                                 </TableHeader>
                                 <TableBody>
                                     {filteredAllocations.length > 0 ? (
-                                        filteredAllocations.map(a => (
+                                        filteredAllocations.map((a) => (
                                             <TableRow key={a.allocation_id || Math.random().toString()}>
-                                                <TableCell>{a.allocation_id || 'N/A'}</TableCell>
-                                                <TableCell>{a.faculty_name || 'Unknown'}</TableCell>
-                                                <TableCell>{a.venue_name || 'Unknown'}</TableCell>
-                                                <TableCell>{a.date || 'N/A'}</TableCell>
-                                                <TableCell>{a.time_slot || 'N/A'}</TableCell>
+                                                <TableCell>{a.allocation_id || "N/A"}</TableCell>
+                                                <TableCell>{a.faculty_name || "Unknown"}</TableCell>
+                                                <TableCell>{a.venue_name || "Unknown"}</TableCell>
+                                                <TableCell>{a.date || "N/A"}</TableCell>
+                                                <TableCell>{a.time_slot || "N/A"}</TableCell>
                                             </TableRow>
                                         ))
                                     ) : (

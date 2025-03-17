@@ -8,21 +8,37 @@ import { Badge } from "@/components/ui/badge";
 import { Download } from "lucide-react";
 import AdminHeader from "@/components/admin-header";
 
+// Define the Attendance interface
+interface Attendance {
+    id: string | number; // Adjust type based on your API (string or number)
+    faculty_name: string;
+    date: string;
+    is_present: boolean;
+}
+
 export default function AttendanceRecords() {
-    const [attendance, setAttendance] = useState([]);
-    const [selectedDate, setSelectedDate] = useState("all");
+    const [attendance, setAttendance] = useState<Attendance[]>([]); // Type the state
+    const [selectedDate, setSelectedDate] = useState<string>("all");
 
     useEffect(() => {
         const fetchAttendance = async () => {
-            const response = await axios.get(`http://localhost:5000/api/attendance_records?date=${selectedDate}`, {
-                headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
-            });
-            setAttendance(response.data);
+            try {
+                const response = await axios.get<Attendance[]>( // Type the axios response
+                    `http://localhost:5000/api/attendance_records?date=${selectedDate}`,
+                    {
+                        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+                    }
+                );
+                setAttendance(response.data || []); // Fallback to empty array if data is undefined
+            } catch (error) {
+                console.error("Error fetching attendance records:", error);
+                setAttendance([]); // Set to empty array on error
+            }
         };
         fetchAttendance();
     }, [selectedDate]);
 
-    const uniqueDates = [...new Set(attendance.map(a => a.date))];
+    const uniqueDates = [...new Set(attendance.map((a) => a.date))];
 
     const handleExportCSV = () => {
         alert("CSV export functionality would be implemented here");
@@ -53,7 +69,9 @@ export default function AttendanceRecords() {
                                 <SelectContent>
                                     <SelectItem value="all">All Dates</SelectItem>
                                     {uniqueDates.map((date) => (
-                                        <SelectItem key={date} value={date}>{date}</SelectItem>
+                                        <SelectItem key={date} value={date}>
+                                            {date}
+                                        </SelectItem>
                                     ))}
                                 </SelectContent>
                             </Select>
@@ -68,17 +86,25 @@ export default function AttendanceRecords() {
                                     </TableRow>
                                 </TableHeader>
                                 <TableBody>
-                                    {attendance.map((a) => (
-                                        <TableRow key={a.id}>
-                                            <TableCell>{a.faculty_name}</TableCell>
-                                            <TableCell>{a.date}</TableCell>
-                                            <TableCell>
-                                                <Badge variant={a.is_present ? "default" : "destructive"}>
-                                                    {a.is_present ? "Present" : "Absent"}
-                                                </Badge>
+                                    {attendance.length > 0 ? (
+                                        attendance.map((a) => (
+                                            <TableRow key={a.id}>
+                                                <TableCell>{a.faculty_name}</TableCell>
+                                                <TableCell>{a.date}</TableCell>
+                                                <TableCell>
+                                                    <Badge variant={a.is_present ? "default" : "destructive"}>
+                                                        {a.is_present ? "Present" : "Absent"}
+                                                    </Badge>
+                                                </TableCell>
+                                            </TableRow>
+                                        ))
+                                    ) : (
+                                        <TableRow>
+                                            <TableCell colSpan={3} className="text-center">
+                                                No attendance records available
                                             </TableCell>
                                         </TableRow>
-                                    ))}
+                                    )}
                                 </TableBody>
                             </Table>
                         </div>
