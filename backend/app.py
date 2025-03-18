@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_sqlalchemy import SQLAlchemy
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from config import Config
@@ -9,6 +9,8 @@ from flask_cors import CORS
 import random
 import openpyxl
 from io import BytesIO
+import re
+from flask import Response
 
 app = Flask(__name__)
 
@@ -46,7 +48,6 @@ def after_request(response):
     response.headers["Access-Control-Allow-Origin"] = "http://localhost:5173"
     response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-    # Ensure session is committed and closed after each request
     db.session.commit()
     db.session.remove()
     return response
@@ -95,7 +96,7 @@ def logout():
 @jwt_required()
 def get_current_user():
     faculty_id = get_jwt_identity()
-    faculty = Faculty.query.get(faculty_id)
+    faculty = db.session.get(Faculty, faculty_id)
     if not faculty:
         return jsonify({'message': 'User not found'}), 404
     return jsonify({
@@ -111,43 +112,101 @@ def get_current_user():
 def mark_attendance():
     data = request.get_json()
     date = datetime.strptime(data.get('date', datetime.now().strftime('%Y-%m-%d')), '%Y-%m-%d').date()
+    allocation_id = data.get('allocation_id')  # Required
+    rfid_tag = data.get('rfid_tag')
 
-    faculty_id = get_jwt_identity()
-    faculty = Faculty.query.get(faculty_id)
-    if not faculty:
-        return jsonify({'success': False, 'message': 'Faculty not found'}), 404
+    if not allocation_id:
+        return jsonify({'success': False, 'message': 'Allocation ID is required'}), 400
 
-    attendance = Attendance.query.filter_by(faculty_id=faculty_id, date=date).first()
+    if rfid_tag:
+        if not re.match(r'^\d{10}$', rfid_tag):
+            return jsonify({'success': False, 'message': 'RFID must be a 10-digit number'}), 400
+        faculty = Faculty.query.filter_by(rfid_tag=rfid_tag).first()
+        if not faculty:
+            return jsonify({'success': False, 'message': 'Faculty not found with this RFID'}), 404
+        faculty_id = faculty.faculty_id
+    else:
+        faculty_id = get_jwt_identity()
+        faculty = db.session.get(Faculty, faculty_id)
+        if not faculty:
+            return jsonify({'success': False, 'message': 'Faculty not found'}), 404
+
+    # Verify the allocation exists and matches the faculty and date
+    allocation = db.session.get(VenueAllocation, allocation_id)
+    if not allocation or allocation.faculty_id != faculty_id or allocation.date != date:
+        return jsonify({'success': False, 'message': 'Invalid allocation for this faculty or date'}), 404
+
+    # Check if attendance is already marked for this allocation
+    attendance = Attendance.query.filter_by(allocation_id=allocation_id).first()
     if attendance:
+        if attendance.is_present:
+            return jsonify({'success': False, 'message': 'Attendance already marked for this allocation'}), 400
         attendance.is_present = True
     else:
-        attendance = Attendance(faculty_id=faculty_id, date=date, is_present=True)
+        attendance = Attendance(
+            faculty_id=faculty_id,
+            allocation_id=allocation_id,
+            date=date,
+            is_present=True
+        )
         db.session.add(attendance)
+
     db.session.commit()
     return jsonify({'success': True, 'message': 'Attendance marked successfully'})
-
 # Get Attendance Records (Admin only)
 @app.route('/api/attendance_records', methods=['GET'])
 @jwt_required()
 def get_attendance_records():
     faculty_id = get_jwt_identity()
-    faculty = Faculty.query.get(faculty_id)
+    faculty = db.session.get(Faculty, faculty_id)
     if not faculty or not faculty.is_admin:
         return jsonify({'message': 'Unauthorized'}), 403
 
     date_filter = request.args.get('date', 'all')
-    query = Attendance.query.join(Faculty)
+    export_format = request.args.get('export', None)
+
+    query = Attendance.query.join(Faculty).join(VenueAllocation, isouter=True)
     if date_filter != 'all':
         query = query.filter(Attendance.date == date_filter)
 
     records = query.all()
-    return jsonify([{
+    data = [{
         'id': r.id,
         'faculty_id': r.faculty_id,
         'faculty_name': r.faculty.name,
+        'rfid_tag': r.faculty.rfid_tag,
+        'allocation_id': r.allocation_id,
+        'venue_name': r.allocation.venue.name if r.allocation else 'N/A',
         'date': r.date.isoformat(),
         'is_present': r.is_present
-    } for r in records])
+    } for r in records]
+
+    if export_format:
+        if export_format == 'excel':
+            import pandas as pd
+            df = pd.DataFrame(data)
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False)
+            output.seek(0)
+            return send_file(output, download_name=f'attendance_{date_filter}.xlsx', as_attachment=True)
+        elif export_format == 'pdf':
+            from reportlab.lib.pagesizes import letter
+            from reportlab.platypus import SimpleDocTemplate, Table as RLTable
+            output = BytesIO()
+            doc = SimpleDocTemplate(output, pagesize=letter)
+            elements = []
+            table_data = [['ID', 'Faculty', 'RFID', 'Venue', 'Date', 'Present']] + [
+                [r['id'], r['faculty_name'], r['rfid_tag'], r['venue_name'], r['date'], 'Yes' if r['is_present'] else 'No']
+                for r in data
+            ]
+            table = RLTable(table_data)
+            elements.append(table)
+            doc.build(elements)
+            output.seek(0)
+            return send_file(output, download_name=f'attendance_{date_filter}.pdf', as_attachment=True)
+
+    return jsonify(data)
 
 @app.route('/api/venues', methods=['GET'])
 @jwt_required()
@@ -164,7 +223,7 @@ def get_venues():
 @jwt_required()
 def add_venue():
     faculty_id = get_jwt_identity()
-    faculty = Faculty.query.get(faculty_id)
+    faculty = db.session.get(Faculty, faculty_id)
     if not faculty or not faculty.is_admin:
         return jsonify({'message': 'Unauthorized'}), 403
     data = request.get_json()
@@ -177,7 +236,7 @@ def add_venue():
 @jwt_required()
 def delete_venue(venue_id):
     faculty_id = get_jwt_identity()
-    faculty = Faculty.query.get(faculty_id)
+    faculty = db.session.get(Faculty, faculty_id)
     if not faculty or not faculty.is_admin:
         return jsonify({'message': 'Unauthorized'}), 403
     venue = Venue.query.get_or_404(venue_id)
@@ -185,23 +244,22 @@ def delete_venue(venue_id):
     db.session.commit()
     return jsonify({'success': True})
 
-# Faculty Management
+# Faculty Management (Merged Single Definition)
 @app.route('/api/faculty', methods=['GET'])
 @jwt_required()
 def get_faculty():
     faculty_id = get_jwt_identity()
-    faculty = Faculty.query.get(faculty_id)
+    faculty = db.session.get(Faculty, faculty_id)
     if not faculty or not faculty.is_admin:
         return jsonify({'message': 'Unauthorized'}), 403
 
-    # Expire all cached objects to ensure fresh data
-    db.session.expire_all()
-    faculty_list = Faculty.query.all()  # Limit to 50 faculty
+    faculty_list = Faculty.query.all()
     return jsonify([{
         'faculty_id': f.faculty_id,
         'name': f.name,
         'mobile_number': f.mobile_number,
         'email_id': f.email_id,
+        'rfid_tag': f.rfid_tag,
         'is_admin': f.is_admin
     } for f in faculty_list])
 
@@ -217,6 +275,7 @@ def add_faculty():
         name=data['name'],
         mobile_number=data['mobile_number'],
         email_id=data['email_id'],
+        rfid_tag=data.get('rfid_tag'),  # Include RFID tag
         is_admin=data.get('is_admin', False)
     )
     db.session.add(faculty)
@@ -227,7 +286,7 @@ def add_faculty():
 @jwt_required()
 def delete_faculty(faculty_id):
     faculty_id_auth = get_jwt_identity()
-    faculty = Faculty.query.get(faculty_id_auth)
+    faculty = db.session.get(Faculty, faculty_id_auth)
     if not faculty or not faculty.is_admin:
         return jsonify({'message': 'Unauthorized'}), 403
     faculty_to_delete = Faculty.query.get_or_404(faculty_id)
@@ -239,9 +298,15 @@ def delete_faculty(faculty_id):
 @app.route('/api/allocations', methods=['GET'])
 @jwt_required()
 def get_allocations():
-    # Expire all cached objects to ensure fresh data
+    faculty_id = get_jwt_identity()
+    faculty = db.session.get(Faculty, faculty_id)
     db.session.expire_all()
-    allocations = VenueAllocation.query.join(Faculty).join(Venue).all()
+
+    if faculty.is_admin:
+        allocations = VenueAllocation.query.join(Faculty).join(Venue).all()
+    else:
+        allocations = VenueAllocation.query.join(Faculty).join(Venue).filter(VenueAllocation.faculty_id == faculty_id).all()
+
     return jsonify([{
         'allocation_id': a.allocation_id,
         'faculty_id': a.faculty_id,
@@ -251,36 +316,32 @@ def get_allocations():
         'venue_location': a.venue.location,
         'date': a.date.isoformat(),
         'time_slot': a.time_slot,
-        'is_present': a.faculty.attendances[-1].is_present if a.faculty.attendances else False
+        'is_present': bool(Attendance.query.filter_by(allocation_id=a.allocation_id, is_present=True).first())
     } for a in allocations])
 
 @app.route('/api/allocations/generate', methods=['POST'])
 @jwt_required()
 def generate_allocations():
     faculty_id = get_jwt_identity()
-    faculty = db.session.get(Faculty, faculty_id)  # Updated from Faculty.query.get(faculty_id)
-
+    faculty = db.session.get(Faculty, faculty_id)
     if not faculty or not faculty.is_admin:
         return jsonify({'message': 'Unauthorized'}), 403
     data = request.get_json()
     date = datetime.strptime(data['date'], '%Y-%m-%d').date()
     time_slot = data['time_slot']
-    faculty_per_venue = int(data['faculty_per_venue'])  # 1 or 2
+    faculty_per_venue = int(data['faculty_per_venue'])
 
     venues = Venue.query.all()
-    faculty_list = Faculty.query.filter_by(is_admin=False).all()  # Exclude admins
+    faculty_list = Faculty.query.filter_by(is_admin=False).all()
 
-    if len(faculty_list) < len(venues) * faculty_per_venue:
-        required = len(venues) * faculty_per_venue
+    required = len(venues) * faculty_per_venue
     available = len(faculty_list)
-    return jsonify({
-        'message': f'Not enough faculty available: {required} needed, but only {available} available'
-    }), 400
+    if available < required:
+        return jsonify({
+            'message': f'Not enough faculty available: {required} needed, but only {available} available'
+        }), 400
 
-    # Clear existing allocations for the date and time slot
     VenueAllocation.query.filter_by(date=date, time_slot=time_slot).delete()
-
-    # Randomly assign faculty to venues
     random.shuffle(faculty_list)
     allocations = []
     faculty_index = 0
@@ -311,7 +372,6 @@ def bulk_import_faculty():
 
     if 'file' not in request.files:
         return jsonify({'message': 'No file part in the request'}), 400
-    print("Request files:", request.files)
 
     file = request.files['file']
     if not file.filename.endswith('.xlsx'):
@@ -321,44 +381,42 @@ def bulk_import_faculty():
         workbook = openpyxl.load_workbook(BytesIO(file.read()))
         sheet = workbook.active
 
-        # Expected column headers
-        expected_headers = ['faculty_id', 'name', 'mobile_number', 'email_id', 'is_admin']
+        expected_headers = ['faculty_id', 'name', 'mobile_number', 'email_id', 'is_admin', 'rfid_tag']
         headers = [cell.value.lower() if cell.value else '' for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
 
         if not all(h in headers for h in expected_headers):
-            return jsonify({'message': 'Invalid Excel format. Required columns: faculty_id, name, mobile_number, email_id, is_admin'}), 400
+            return jsonify({'message': 'Invalid Excel format. Required columns: faculty_id, name, mobile_number, email_id, is_admin, rfid_tag'}), 400
 
         imported_count = 0
         updated_count = 0
 
         for row in sheet.iter_rows(min_row=2, values_only=True):
-            if len(row) < 5:
+            if len(row) < 6:
                 continue
 
-            faculty_id = row[0]
-            existing_faculty = Faculty.query.get(faculty_id) if faculty_id else None
+            faculty_id, name, mobile_number, email_id, is_admin, rfid_tag = row
+            existing_faculty = db.session.get(Faculty, faculty_id) if faculty_id else None
 
             if existing_faculty:
-                # Update existing faculty
-                existing_faculty.name = row[1]
-                existing_faculty.mobile_number = str(row[2])
-                existing_faculty.email_id = row[3]
-                existing_faculty.is_admin = bool(row[4])
+                existing_faculty.name = name
+                existing_faculty.mobile_number = str(mobile_number)
+                existing_faculty.email_id = email_id
+                existing_faculty.is_admin = bool(is_admin)
+                existing_faculty.rfid_tag = rfid_tag
                 updated_count += 1
             else:
-                # Insert new faculty
                 new_faculty = Faculty(
                     faculty_id=faculty_id,
-                    name=row[1],
-                    mobile_number=str(row[2]),
-                    email_id=row[3],
-                    is_admin=bool(row[4])
+                    name=name,
+                    mobile_number=str(mobile_number),
+                    email_id=email_id,
+                    is_admin=bool(is_admin),
+                    rfid_tag=rfid_tag
                 )
                 db.session.add(new_faculty)
                 imported_count += 1
 
         db.session.commit()
-        # Expire all cached objects after commit to ensure fresh data on next query
         db.session.expire_all()
         return jsonify({
             'success': True,
@@ -389,7 +447,6 @@ def bulk_import_venues():
         workbook = openpyxl.load_workbook(BytesIO(file.read()))
         sheet = workbook.active
 
-        # Expected column headers
         expected_headers = ['venue_id', 'name', 'location', 'capacity']
         headers = [cell.value.lower() if cell.value else '' for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
 
@@ -407,13 +464,11 @@ def bulk_import_venues():
             existing_venue = Venue.query.get(venue_id) if venue_id else None
 
             if existing_venue:
-                # Update existing venue
                 existing_venue.name = row[1]
                 existing_venue.location = row[2]
                 existing_venue.capacity = int(row[3])
                 updated_count += 1
             else:
-                # Insert new venue
                 new_venue = Venue(
                     venue_id=venue_id,
                     name=row[1],
@@ -424,7 +479,6 @@ def bulk_import_venues():
                 imported_count += 1
 
         db.session.commit()
-        # Expire all cached objects after commit to ensure fresh data on next query
         db.session.expire_all()
         return jsonify({
             'success': True,

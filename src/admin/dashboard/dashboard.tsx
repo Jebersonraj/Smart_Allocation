@@ -53,7 +53,6 @@ export default function AdminDashboard() {
 
     const getAuthHeaders = (): AuthHeaders => {
         const token = localStorage.getItem("token");
-        console.log("Token being sent:", token);
         if (!token) {
             navigate("/login?role=admin");
             return {};
@@ -80,14 +79,9 @@ export default function AdminDashboard() {
             setAllocationCount(allocRes.data.length);
         } catch (error) {
             const axiosError = error as AxiosError<ErrorResponse>;
-            if (axiosError.response) {
-                console.error("Fetch counts error:", axiosError.response.status, axiosError.response.data?.message);
-                if (axiosError.response.status === 401 || axiosError.response.status === 422) {
-                    localStorage.removeItem("token");
-                    navigate("/login?role=admin");
-                }
-            } else {
-                console.error("Unexpected error:", error);
+            if (axiosError.response?.status === 401 || axiosError.response?.status === 422) {
+                localStorage.removeItem("token");
+                navigate("/login?role=admin");
             }
         }
     };
@@ -101,61 +95,9 @@ export default function AdminDashboard() {
             setRecentAllocations(response.data.slice(0, 5));
         } catch (error) {
             const axiosError = error as AxiosError<ErrorResponse>;
-            if (axiosError.response) {
-                console.error("Fetch allocations error:", axiosError.response.status, axiosError.response.data?.message);
-                if (axiosError.response.status === 401 || axiosError.response.status === 422) {
-                    localStorage.removeItem("token");
-                    navigate("/login?role=admin");
-                }
-            } else {
-                console.error("Unexpected error:", error);
-            }
-        }
-    };
-
-    const handleFileChange = (type: "faculty" | "venues", event: React.ChangeEvent<HTMLInputElement>) => {
-        const file = event.target.files?.[0] || null;
-        if (type === "faculty") {
-            setFacultyFile(file);
-        } else if (type === "venues") {
-            setVenueFile(file);
-        }
-    };
-
-    const handleBulkImport = async (type: "faculty" | "venues") => {
-        const file = type === "faculty" ? facultyFile : venueFile;
-        if (!file) {
-            console.error("No file selected for", type);
-            alert(`Please select a file to upload for ${type}`);
-            return;
-        }
-
-        const formData = new FormData();
-        formData.append("file", file);
-
-        try {
-            const headers = getAuthHeaders();
-            const response = await axios.post<SuccessResponse>(
-                `http://localhost:5000/api/bulk-import/${type}`,
-                formData,
-                headers
-            );
-            console.log("Success:", response.data.message);
-            alert(response.data.message);
-            fetchCounts();
-            fetchRecentAllocations();
-            if (type === "faculty") setFacultyFile(null);
-            else setVenueFile(null);
-            const inputElement = document.getElementById(`${type}-upload`) as HTMLInputElement;
-            if (inputElement) inputElement.value = "";
-        } catch (error) {
-            const axiosError = error as AxiosError<ErrorResponse>;
-            if (axiosError.response) {
-                console.error("Bulk import error:", axiosError.response.data?.message || "Failed to import data");
-                alert(`Bulk import failed: ${axiosError.response.data?.message || "Unknown error"}`);
-            } else {
-                console.error("Bulk import error:", "An unexpected error occurred");
-                alert("An unexpected error occurred during bulk import");
+            if (axiosError.response?.status === 401 || axiosError.response?.status === 422) {
+                localStorage.removeItem("token");
+                navigate("/login?role=admin");
             }
         }
     };
@@ -203,7 +145,7 @@ export default function AdminDashboard() {
                                         <CardContent><p className="text-3xl font-bold">{venueCount}</p></CardContent>
                                     </Card>
                                     <Card>
-                                        <CardHeader className="pb-2"><CardTitle className="text-xl">Allocations</CardTitle><CardDescription>Completed allocations</CardDescription></CardHeader>
+                                        <CardHeader className="pb-2"><CardTitle className="text-xl">Allocations</CardTitle><CardDescription>Total allocations</CardDescription></CardHeader>
                                         <CardContent><p className="text-3xl font-bold">{allocationCount}</p></CardContent>
                                     </Card>
                                 </div>
@@ -249,7 +191,7 @@ export default function AdminDashboard() {
                                                 </Button>
                                             </div>
                                             <p className="text-sm text-muted-foreground">
-                                                Required columns: faculty_id, name, mobile_number, email_id, is_admin
+                                                Required columns: faculty_id, name, mobile_number, email_id, is_admin, rfid_tag
                                             </p>
                                         </div>
                                         <div className="space-y-2">
