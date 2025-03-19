@@ -199,7 +199,7 @@ export default function FacultyDashboard() {
                                                             size="sm"
                                                             onClick={() => handleMarkAttendance(alloc)}
                                                         >
-                                                            Mark Present
+                                                            Mark Attendance
                                                         </Button>
                                                     )}
                                                 </TableCell>
